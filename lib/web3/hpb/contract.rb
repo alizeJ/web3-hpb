@@ -81,11 +81,12 @@ module Web3
         end
 
         def do_call(web3_rpc, contract_address, args)
-          data = '0x' + signature_hash + encode_hex(encode_abi(inputs_types, args))
+          data = '0x' + signature_hash + encode_hex(encode_abi(input_types, args))
+          puts data
 
           response = web3_rpc.request("hpb_call", [{ to: contract_address, data: data}, 'latest'])
-
           string_data = [remove_0x_head(response)].pack('H*')
+
           return nil if string_data.empty?
 
           result = decode_abi(output_types, string_data)
@@ -103,7 +104,7 @@ module Web3
         parse_abi(@abi)
       end
 
-      def at(adress)
+      def at(address)
         ContractInstance.new(self, address)
       end
 
@@ -151,7 +152,8 @@ module Web3
           case a['type']
           when 'function'
             method = ContractMethod.new(a)
-            @fucntions[method.name] = method_hash
+            @functions[method.name] = method
+            puts @functions
             @functions_by_hash[method.signature_hash] = method
           when 'event'
             method  = ContractMethod.new(a)

@@ -52,7 +52,7 @@ module Web3::Hpb::Abi
     # @return [String] encoded bytes
     #
 
-    def encode_type(type_arg)
+    def encode_type(type, arg)
 
       if %w(string bytes).include?(type.base) && type.sub.empty?
         encode_primitive_type(type, arg)
@@ -87,7 +87,6 @@ module Web3::Hpb::Abi
           arg.map { |x| encode_type(type.subtype, x) }.join
         end
       end
-
     end
 
     def encode_primitive_type(type, arg)
@@ -95,11 +94,11 @@ module Web3::Hpb::Abi
       when 'uint'
         begin
           real_size = type.sub.to_i
-          i = get_unit(arg)
+          i = get_uint(arg)
 
           raise ValueOutOfBounds, arg unless i >= 0 && i < 2**real_size
-          utils.zpad_int(i)
-        rescue EncodeingError
+          Utils.zpad_int(i)
+        rescue EncodingError
           raise ValueOutOfBounds, arg
         end
       when 'bool'
@@ -108,11 +107,11 @@ module Web3::Hpb::Abi
       when 'int'
         begin
           real_size = type.sub.to_i
-          i = get_int arg
+          i = get_int(arg)
 
           raise ValueOutOfBounds, arg unless i >= -2**(real_size-1) && i < 2**(real_size-1)
           Utils.zpad_int(i % 2**type.sub.to_i)
-        rescue
+        rescue EncodingError
           raise ValueOutOfBounds, arg
         end
       when 'ufixed'
@@ -191,6 +190,185 @@ module Web3::Hpb::Abi
         end
       else
         raise EncodingError, "Unhandled type: #{type.base} #{type.sub}"
+      end
+    end
+
+    ##
+    # Decodes multiple arguments using the head/tail mechanism.
+    #
+    def decode_abi(types, data)
+      parsed_types = types.map {|t| Type.parse(t) }
+
+      outputs = [nil] * types.size
+      start_positions = [nil] * types.size + [data.size]
+
+      # TODO: refactor, a reverse iteration will be better
+      pos = 0
+      parsed_types.each_with_index do |t, i|
+        # If a type is static, grab the data directly, otherwise record its
+        # start position
+        if t.dynamic?
+          start_positions[i] = Utils.big_endian_to_int(data[pos, 32])
+
+          j = i - 1
+          while j >= 0 && start_positions[j].nil?
+            start_positions[j] = start_positions[i]
+            j -= 1
+          end
+
+          pos += 32
+        else
+          outputs[i] = data[pos, t.size]
+          pos += t.size
+        end
+      end
+
+      # We add a start position equal to the length of the entire data for
+      # convenience.
+      j = types.size - 1
+      while j >= 0 && start_positions[j].nil?
+        start_positions[j] = start_positions[types.size]
+        j -= 1
+      end
+
+      #raise DecodingError, "Not enough data for head" unless pos <= data.size
+
+      parsed_types.each_with_index do |t, i|
+        if t.dynamic?
+          offset, next_offset = start_positions[i, 2]
+          outputs[i] = data[offset...next_offset]
+        end
+      end
+
+      parsed_types.zip(outputs).map {|(type, out)| decode_type(type, out) }
+    end
+
+    alias :decode :decode_abi
+
+    def decode_typed_data type_name, data
+      decode_primitive_type Type.parse(type_name), data
+    end
+
+    def decode_type(type, arg)
+      if %w(string bytes).include?(type.base) && type.sub.empty?
+        l = Utils.big_endian_to_int arg[0,32]
+        data = arg[32..-1]
+        data[0, l]
+      elsif type.dynamic?
+        l = Utils.big_endian_to_int arg[0,32]
+        subtype = type.subtype
+
+        if subtype.dynamic?
+          raise DecodingError, "Not enough data for head" unless arg.size >= 32 + 32*l
+
+          start_positions = (1..l).map {|i| Utils.big_endian_to_int arg[32*i, 32] }
+          start_positions.push arg.size
+
+          outputs = (0...l).map {|i| arg[start_positions[i]...start_positions[i+1]] }
+
+          outputs.map {|out| decode_type(subtype, out) }
+        else
+          (0...l).map {|i| decode_type(subtype, arg[32 + subtype.size*i, subtype.size]) }
+        end
+      elsif !type.dims.empty? # static-sized arrays
+        l = type.dims.last
+        subtype = type.subtype
+
+        (0...l).map {|i| decode_type(subtype, arg[subtype.size*i, subtype.size]) }
+      else
+        decode_primitive_type type, arg
+      end
+    end
+
+    def decode_primitive_type(type, data)
+      case type.base
+      when 'address'
+        Utils.encode_hex data[12..-1]
+      when 'string', 'bytes'
+        if type.sub.empty? # dynamic
+          if data.length==32
+            data[0..32]
+          else
+            size = Utils.big_endian_to_int data[0,32]
+            data[32..-1][0,size]
+          end
+        else # fixed
+          data[0, type.sub.to_i]
+        end
+      when 'hash'
+        data[(32 - type.sub.to_i), type.sub.to_i]
+      when 'uint'
+        Utils.big_endian_to_int data
+      when 'int'
+        u = Utils.big_endian_to_int data
+        u >= 2**(type.sub.to_i-1) ? (u - 2**type.sub.to_i) : u
+      when 'ufixed'
+        high, low = type.sub.split('x').map(&:to_i)
+        Utils.big_endian_to_int(data) * 1.0 / 2**low
+      when 'fixed'
+        high, low = type.sub.split('x').map(&:to_i)
+        u = Utils.big_endian_to_int data
+        i = u >= 2**(high+low-1) ? (u - 2**(high+low)) : u
+        i * 1.0 / 2**low
+      when 'bool'
+        data[-1] == BYTE_ONE
+      else
+        raise DecodingError, "Unknown primitive type: #{type.base}"
+      end
+    end
+
+    private
+
+    def get_uint(n)
+      case n
+      when Integer
+        raise EncodingError, "Number out of range: #{n}" if n > UINT_MAX || n < UINT_MIN
+        n
+      when String
+        i = if n.size == 40
+              Utils.decode_hex(n)
+            elsif n.size <= 32
+              n
+            else
+              raise EncodingError, "String too long: #{n}"
+            end
+        i = Utils.big_endian_to_int i
+
+        raise EncodingError, "Number out of range: #{i}" if i > UINT_MAX || i < UINT_MIN
+        i
+      when true
+        1
+      when false, nil
+        0
+      else
+        raise EncodingError, "Cannot decode uint: #{n}"
+      end
+    end
+
+    def get_int(n)
+      case n
+      when Integer
+        raise EncodingError, "Number out of range: #{n}" if n > INT_MAX || n < INT_MIN
+        n
+      when String
+        i = if n.size == 40
+              Utils.decode_hex(n)
+            elsif n.size <= 32
+              n
+            else
+              raise EncodingError, "String too long: #{n}"
+            end
+        i = Utils.big_endian_to_int i
+
+        i = i > INT_MAX ? (i-TT256) : i
+        raise EncodingError, "Number out of range: #{i}" if i > INT_MAX || i < INT_MIN
+        i
+      when true
+        1
+      when false, nil
+        0
+      else
+        raise EncodingError, "Cannot decode int: #{n}"
       end
     end
 
