@@ -22,7 +22,55 @@ Or install it yourself as:
 
 ## Usage
 
-TODO: Write usage instructions here
+### 连接
+初始化一个web3对象
+```ruby
+web3 = Web3::Hpb::Rpc.new
+```
+默认配置为
+```ruby
+web3 = Web3::Hpb::Rpc.new host: 'node.host.com',
+                          port: 8545,
+                          connect_options: { use_ssl: true, read_timeout: 120 }
+```
+
+### 使用hpb接口
+
+```
+>> web3.hpb.blockNumber
+4376369
+
+>> web3.hpb.getBalance '0x4c8a1996754c11ac255c747fdb36a4288d230541'
+3916.6597314456685
+
+>> block = web3.hpb.getBlockByNumber 4376369
+#<Web3::Hpb::Block:0x007f844d6f1138 @block_data={"author"=>"0x4c8a1996754c11ac255c797fdb36f4288d230541", ...
+
+>> block.timestamp_time
+2017-10-17 12:51:36 +0300
+
+>> block.transactions.count
+129
+
+>> block.transactions[0].from
+"0x4c8a199481ac255c747fdb36f4288d230541"
+
+>> block.transactions[0].value_eth
+0.51896811
+
+```
+
+### 使用abi接口
+```
+# creation of contract object
+myContract = web3.hpb.contract(abi);
+
+# initiate contract for an address
+myContractInstance = myContract.at('0x57d180cbaffbc97237f572148fc1b283b68d8861');
+
+# call constant function
+result = myContractInstance.balanceOf('0x...'); # any constant method works
+```
 
 ## Development
 
