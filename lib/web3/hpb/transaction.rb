@@ -1,5 +1,5 @@
 module Web3
-  module Eth
+  module Hpb
 
     class Transaction
 
